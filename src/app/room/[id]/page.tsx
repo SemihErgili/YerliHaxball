@@ -111,39 +111,31 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     oscillator.stop(audioContext.currentTime + 0.5);
   };
 
-  // Socket connection
+  // API-based multiplayer
   useEffect(() => {
-    const socket = io(process.env.NODE_ENV === 'production' ? 'https://your-app.vercel.app' : 'http://localhost:3001', {
-      query: { roomId: roomCode }
+    setConnected(true);
+    myPlayerIdRef.current = Math.random().toString(36);
+    playSound('join');
+    
+    // Join game
+    fetch(`/api/game/${roomCode}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'join',
+        data: { playerId: myPlayerIdRef.current, name: playerName }
+      })
     });
     
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      setConnected(true);
-      myPlayerIdRef.current = socket.id;
-      playSound('join');
-      socket.emit('joinGame', { name: playerName });
-    });
-
-    socket.on('gameState', (state: any) => {
-      if (state.goalScored && !showGoalEffect) {
-        setShowGoalEffect(state.goalScored);
-        playSound('goal');
-        setTimeout(() => setShowGoalEffect(null), 3000);
-      }
+    // Poll for updates
+    const interval = setInterval(async () => {
+      const res = await fetch(`/api/game/${roomCode}`);
+      const state = await res.json();
       setGameState(state);
-    });
-
-    socket.on('newMessage', (message: Message) => {
-      setGameState(prev => ({
-        ...prev,
-        messages: [...prev.messages, message]
-      }));
-    });
-
-    return () => socket.disconnect();
-  }, [roomCode, showGoalEffect]);
+    }, 100);
+    
+    return () => clearInterval(interval);
+  }, [roomCode, playerName]);
 
   // Auto scroll chat
   useEffect(() => {
@@ -186,32 +178,71 @@ export default function RoomPage({ params }: { params: Promise<{ id: string }> }
     }
   }, []);
 
-  // Input loop
+  // Game loop with API updates
   useEffect(() => {
     if (!connected) return;
 
-    const inputLoop = () => {
-      if (!socketRef.current) return;
-      
-      const input = {
-        up: !!(keysPressed.current['w'] || keysPressed.current['arrowup']),
-        down: !!(keysPressed.current['s'] || keysPressed.current['arrowdown']),
-        left: !!(keysPressed.current['a'] || keysPressed.current['arrowleft']),
-        right: !!(keysPressed.current['d'] || keysPressed.current['arrowright']),
-        kick: !!keysPressed.current[' ']
-      };
+    const gameLoop = () => {
+      const player = gameState.players[myPlayerIdRef.current];
+      if (!player) return;
 
-      socketRef.current.emit('playerInput', input);
+      let moved = false;
+      let newX = player.x;
+      let newY = player.y;
+      const speed = 8;
+
+      if (keysPressed.current['w'] || keysPressed.current['arrowup']) {
+        newY = Math.max(18, newY - speed);
+        moved = true;
+      }
+      if (keysPressed.current['s'] || keysPressed.current['arrowdown']) {
+        newY = Math.min(582, newY + speed);
+        moved = true;
+      }
+      if (keysPressed.current['a'] || keysPressed.current['arrowleft']) {
+        newX = Math.max(18, newX - speed);
+        moved = true;
+      }
+      if (keysPressed.current['d'] || keysPressed.current['arrowright']) {
+        newX = Math.min(1182, newX + speed);
+        moved = true;
+      }
+
+      if (moved) {
+        fetch(`/api/game/${roomCode}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'update',
+            data: {
+              playerId: myPlayerIdRef.current,
+              player: { ...player, x: newX, y: newY }
+            }
+          })
+        });
+      }
     };
 
-    const interval = setInterval(inputLoop, 20);
+    const interval = setInterval(gameLoop, 50);
     return () => clearInterval(interval);
-  }, [connected]);
+  }, [connected, gameState, roomCode]);
 
   // Chat functions
   const sendMessage = () => {
-    if (chatMessage.trim() && socketRef.current) {
-      socketRef.current.emit('chatMessage', chatMessage.trim());
+    if (chatMessage.trim()) {
+      fetch(`/api/game/${roomCode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'chat',
+          data: {
+            playerId: myPlayerIdRef.current,
+            playerName: playerName,
+            text: chatMessage.trim(),
+            color: '#ef4444'
+          }
+        })
+      });
       setChatMessage('');
     }
   };
